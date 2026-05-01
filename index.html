@@ -3,37 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Detector de Perspectiva Pro</title>
+    <title>CV Debug Mode</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; touch-action: none; }
+        body { margin: 0; padding: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
         #container { position: relative; width: 100vw; height: 100vh; }
-        video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
-        #ui-overlay { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
-        .top-bar { padding: 20px; background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent); text-align: center; }
-        .bottom-bar { padding: 30px 20px; background: linear-gradient(to top, rgba(0,0,0,0.7), transparent); display: flex; flex-direction: column; align-items: center; gap: 15px; pointer-events: auto; }
-        #status { padding: 5px 15px; border-radius: 15px; font-size: 12px; display: inline-block; }
-        .searching { background: #f39c12; }
-        .detected { background: #27ae60; }
-        button { padding: 12px 25px; font-size: 16px; border-radius: 25px; border: none; font-weight: bold; background: #00d4ff; cursor: pointer; }
-        #loading-screen { position: absolute; inset: 0; background: #121212; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.6; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; }
+        #ui { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; z-index: 10; }
+        #status { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); padding: 5px 15px; border-radius: 10px; font-size: 12px; z-index: 10; background: rgba(0,0,0,0.5); }
+        button { padding: 15px 30px; border-radius: 30px; border: none; background: #00d4ff; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<div id="loading-screen">
-    <div style="font-size: 24px; margin-bottom: 10px;">🚀 OpenCV</div>
-    <div>Cargando visión artificial...</div>
-</div>
-
+<div id="status">INICIALIZANDO...</div>
 <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
-    <div id="ui-overlay">
-        <div class="top-bar"><div id="status" class="searching">Esperando cámara...</div></div>
-        <div class="bottom-bar"><button id="startBtn">EMPEZAR DETECCIÓN</button></div>
-    </div>
+    <div id="ui"><button id="startBtn">INICIAR DEBUG</button></div>
 </div>
 
 <script>
@@ -44,19 +32,16 @@
     const startBtn = document.getElementById('startBtn');
 
     const procCanvas = document.createElement('canvas');
-    const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
+    const procCtx = procCanvas.getContext('2d');
     const PROC_W = 400;
 
+    let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
     let isRunning = false;
-    let corners = [ {x:0, y:0}, {x:0, y:0}, {x:0, y:0}, {x:0, y:0} ]; // P1:TL, P2:TR, P3:BR, P4:BL
-    const SMOOTH = 0.2; 
 
-    function onOpenCvReady() { document.getElementById('loading-screen').style.display = 'none'; }
+    function onOpenCvReady() { statusDiv.textContent = "SISTEMA LISTO"; }
 
-    async function startApp() {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment', width: 1280, height: 720 }
-        });
+    startBtn.onclick = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         video.srcObject = stream;
         video.onloadedmetadata = () => {
             canvas.width = video.videoWidth;
@@ -65,16 +50,13 @@
             startBtn.style.display = 'none';
             processFrame();
         };
-    }
+    };
 
-    startBtn.addEventListener('click', startApp);
-
-    // Función matemática para hallar intersección de dos segmentos
     function getIntersection(l1, l2) {
         const [x1, y1, x2, y2] = l1;
         const [x3, y3, x4, y4] = l2;
         const den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (den === 0) return null;
+        if (Math.abs(den) < 0.01) return null;
         return {
             x: ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / den,
             y: ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / den
@@ -90,93 +72,100 @@
 
         let src = cv.imread(procCanvas);
         let dst = new cv.Mat();
-        
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
-        cv.Canny(dst, dst, 50, 150);
+        cv.Canny(dst, dst, 70, 180); // Umbral un poco más alto para limpiar
 
         let lines = new cv.Mat();
-        // minLineLength alto (80) para ignorar pinceladas internas
-        cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 40, 80, 20);
-
-        let bestH = { top: null, bot: null, yMin: Infinity, yMax: -Infinity };
-        let bestV = { left: null, right: null, xMin: Infinity, xMax: -Infinity };
-
-        const margin = procCanvas.width * 0.15; // Ignorar el centro
-
-        for (let i = 0; i < lines.rows; ++i) {
-            let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
-            let angle = Math.abs(Math.atan2(l[3]-l[1], l[2]-l[0]) * 180 / Math.PI);
-            let midY = (l[1] + l[3]) / 2;
-            let midX = (l[0] + l[2]) / 2;
-
-            // Filtrar líneas periféricas para evitar el contenido del cuadro
-            if (angle < 20 || angle > 160) { // Horizontales
-                if (midY < bestH.yMin) { bestH.yMin = midY; bestH.top = l; }
-                if (midY > bestH.yMax) { bestH.yMax = midY; bestH.bot = l; }
-            } else if (angle > 70 && angle < 110) { // Verticales
-                if (midX < bestV.xMin) { bestV.xMin = midX; bestV.left = l; }
-                if (midX > bestV.xMax) { bestV.xMax = midX; bestV.right = l; }
-            }
-        }
+        // Bajamos el umbral de votos (30) pero mantenemos longitud (60)
+        cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 30, 60, 30);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const scale = canvas.width / PROC_W;
 
-        if (bestH.top && bestH.bot && bestV.left && bestV.right) {
-            // Calcular las 4 esquinas por intersección
-            const pTL = getIntersection(bestH.top, bestV.left);
-            const pTR = getIntersection(bestH.top, bestV.right);
-            const pBR = getIntersection(bestH.bot, bestV.right);
-            const pBL = getIntersection(bestH.bot, bestV.left);
+        let hCandidates = [];
+        let vCandidates = [];
+
+        // --- MODO DEBUG: Dibujar todas las líneas detectadas ---
+        ctx.lineWidth = 1;
+        for (let i = 0; i < lines.rows; ++i) {
+            let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
+            let dx = l[2] - l[0];
+            let dy = l[3] - l[1];
+            let len = Math.sqrt(dx*dx + dy*dy);
+            let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+
+            // Dibujar línea de debug (rojo tenue)
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.beginPath();
+            ctx.moveTo(l[0]*scale, l[1]*scale);
+            ctx.lineTo(l[2]*scale, l[3]*scale);
+            ctx.stroke();
+
+            // Clasificar por ángulo y guardar con su longitud
+            if (angle < 25 || angle > 155) hCandidates.push({data: l, len: len, mid: (l[1]+l[3])/2});
+            else if (angle > 65 && angle < 115) vCandidates.push({data: l, len: len, mid: (l[0]+l[2])/2});
+        }
+
+        // --- LÓGICA DE SELECCIÓN INTELIGENTE ---
+        // En lugar de las más externas, buscamos las líneas largas que definen un área central razonable
+        if (hCandidates.length >= 2 && vCandidates.length >= 2) {
+            // Ordenar por longitud descendente y tomar las mejores
+            hCandidates.sort((a, b) => b.len - a.len);
+            vCandidates.sort((a, b) => b.len - a.len);
+
+            // De las mejores líneas, intentamos encontrar un par que esté separado
+            let top = hCandidates[0];
+            let bot = hCandidates.find(h => Math.abs(h.mid - top.mid) > procCanvas.height * 0.2) || hCandidates[1];
+            
+            let left = vCandidates[0];
+            let right = vCandidates.find(v => Math.abs(v.mid - left.mid) > procCanvas.width * 0.2) || vCandidates[1];
+
+            // Asegurar orden arriba/abajo izquierda/derecha
+            if (top.mid > bot.mid) [top, bot] = [bot, top];
+            if (left.mid > right.mid) [left, right] = [right, left];
+
+            // Intersecciones
+            const pTL = getIntersection(top.data, left.data);
+            const pTR = getIntersection(top.data, right.data);
+            const pBR = getIntersection(bot.data, right.data);
+            const pBL = getIntersection(bot.data, left.data);
 
             if (pTL && pTR && pBR && pBL) {
-                const scale = canvas.width / PROC_W;
                 const target = [pTL, pTR, pBR, pBL];
-
-                // Aplicar suavizado individual a cada esquina
                 target.forEach((p, i) => {
-                    corners[i].x += (p.x * scale - corners[i].x) * SMOOTH;
-                    corners[i].y += (p.y * scale - corners[i].y) * SMOOTH;
+                    corners[i].x += (p.x * scale - corners[i].x) * 0.2;
+                    corners[i].y += (p.y * scale - corners[i].y) * 0.2;
                 });
-
-                drawGrid(corners);
-                statusDiv.textContent = "🎯 CUADRO ENFOCADO";
-                statusDiv.className = "detected";
+                drawUI(corners);
+                statusDiv.textContent = "ESTRUCTURA DETECTADA";
+                statusDiv.style.color = "#00ff00";
             }
         } else {
-            statusDiv.textContent = "🔍 BUSCANDO MARCO...";
-            statusDiv.className = "searching";
+            statusDiv.textContent = "BUSCANDO LÍNEAS COHERENTES...";
+            statusDiv.style.color = "white";
         }
 
         src.delete(); dst.delete(); lines.delete();
         requestAnimationFrame(processFrame);
     }
 
-    function drawGrid(pts) {
-        // Borde principal
+    function drawUI(pts) {
+        // Marco Verde
         ctx.beginPath();
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 3;
         ctx.strokeStyle = '#00ff00';
         ctx.moveTo(pts[0].x, pts[0].y);
         pts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
         ctx.stroke();
 
-        // Regla de tercios con perspectiva
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-        
-        const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-
-        [1/3, 2/3].forEach(t => {
-            // Verticales
-            let top = lerp(pts[0], pts[1], t);
-            let bot = lerp(pts[3], pts[2], t);
-            ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bot.x, bot.y); ctx.stroke();
-            // Horizontales
-            let left = lerp(pts[0], pts[3], t);
-            let right = lerp(pts[1], pts[2], t);
-            ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+        // Círculos en esquinas para debug visual
+        ctx.fillStyle = '#00ff00';
+        pts.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
+            ctx.fill();
         });
     }
 </script>
