@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CV - Ajuste de Lado Largo</title>
+    <title>CV - Ajuste Lado Largo (Vertical)</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
     <style>
         body { margin: 0; padding: 0; background: #000; color: white; font-family: system-ui; overflow: hidden; touch-action: none; }
@@ -11,14 +11,14 @@
         video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
         video { opacity: 0.4; }
         canvas { z-index: 2; pointer-events: auto; }
-        #ui-hint { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 10; font-size: 14px; pointer-events: none; }
+        #ui-hint { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 10; font-size: 14px; pointer-events: none; text-shadow: 0 2px 4px #000; }
         .controls { position: absolute; bottom: 30px; width: 100%; display: flex; justify-content: center; z-index: 10; }
         button { padding: 12px 24px; border-radius: 30px; border: none; background: #00d4ff; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<div id="ui-hint">Deslizá para ajustar los límites del cuadro</div>
+<div id="ui-hint">Desliza ARRIBA/ABAJO para ajustar el alto del cuadro</div>
 <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
@@ -31,24 +31,25 @@
     const ctx = canvas.getContext('2d');
     const startBtn = document.getElementById('startBtn');
 
-    const PROC_W = 450;
+    const PROC_W = 400;
     const procCanvas = document.createElement('canvas');
     const procCtx = procCanvas.getContext('2d');
 
     let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
     let isRunning = false;
     
-    // El usuario define el "Ancho" o "Alto" esperado
-    let manualLimitX = 0.8; // 80% del ancho por defecto
+    // manualLimitY define la separación de las líneas horizontales (lado largo)
+    let manualLimitY = 0.85; 
 
     canvas.addEventListener('pointermove', (e) => {
-        if (e.buttons > 0) { // Si está presionando/deslizando
+        if (e.buttons > 0) {
             const rect = canvas.getBoundingClientRect();
-            manualLimitX = Math.abs((e.clientX - rect.left) / rect.width - 0.5) * 2;
+            // Calculamos la distancia desde el centro horizontal hacia arriba/abajo
+            manualLimitY = Math.min(0.98, Math.abs((e.clientY - rect.top) / rect.height - 0.5) * 2);
         }
     });
 
-    function onOpenCvReady() { console.log("OpenCV Ready"); }
+    function onOpenCvReady() { console.log("OpenCV Listo"); }
 
     startBtn.onclick = async () => {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -88,14 +89,14 @@
         cv.HoughLinesP(dst, lines, 1, Math.PI/180, 30, 50, 40);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const toVisual = canvas.width / procCanvas.width;
+        const toVisualW = canvas.width / procCanvas.width;
+        const toVisualH = canvas.height / procCanvas.height;
 
-        let hLines = []; // Candidatas para arriba/abajo
-        let vLines = []; // Candidatas para los costados
+        let hLines = []; // Lados LARGOS (Horizontales)
+        let vLines = []; // Lados CORTOS (Verticales)
 
-        // Límites de búsqueda basados en la interacción del usuario
-        const visualLimitX = (manualLimitX * procCanvas.width) / 2;
-        const centerX = procCanvas.width / 2;
+        const centerInProcY = procCanvas.height / 2;
+        const searchLimitY = (manualLimitY * procCanvas.height) / 2;
 
         for (let i = 0; i < lines.rows; ++i) {
             let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
@@ -103,20 +104,21 @@
             let midX = (l[0]+l[2])/2;
             let midY = (l[1]+l[3])/2;
 
-            // Dibujar TODAS las líneas en rojo tenue
-            ctx.strokeStyle = 'rgba(255,0,0,0.1)';
-            ctx.beginPath(); ctx.moveTo(l[0]*toVisual, l[1]*toVisual); ctx.lineTo(l[2]*toVisual, l[3]*toVisual); ctx.stroke();
+            // Debug líneas rojas
+            ctx.strokeStyle = 'rgba(255,0,0,0.15)';
+            ctx.beginPath(); ctx.moveTo(l[0]*toVisualW, l[1]*toVisualH); ctx.lineTo(l[2]*toVisualW, l[3]*toVisualH); ctx.stroke();
 
-            if (angle < 15 || angle > 165) {
-                // Lados cortos (Horizontales): Deben estar arriba o abajo (cerca de bordes)
-                if (midY < procCanvas.height * 0.2 || midY > procCanvas.height * 0.8) {
-                    hLines.push({data: l, mid: midY});
-                }
-            } else if (angle > 75 && angle < 105) {
-                // Lados largos (Verticales): Filtramos por la posición del toque/deslizamiento
-                let distFromLimit = Math.abs(Math.abs(midX - centerX) - visualLimitX);
-                if (distFromLimit < 50) { // Tolerancia de 50px alrededor del límite manual
+            // 1. Lados Cortos (Verticales): Fijos a los costados (85-90% del ancho)
+            if (angle > 75 && angle < 105) {
+                if (midX < procCanvas.width * 0.15 || midX > procCanvas.width * 0.85) {
                     vLines.push({data: l, mid: midX});
+                }
+            } 
+            // 2. Lados Largos (Horizontales): Cerca de las guías de usuario (Y)
+            else if (angle < 15 || angle > 165) {
+                let distFromGuide = Math.abs(Math.abs(midY - centerInProcY) - searchLimitY);
+                if (distFromGuide < 40) { // Margen de búsqueda
+                    hLines.push({data: l, mid: midY});
                 }
             }
         }
@@ -125,6 +127,7 @@
             hLines.sort((a,b) => a.mid - b.mid);
             vLines.sort((a,b) => a.mid - b.mid);
 
+            // Intersecciones para las 4 esquinas
             const pTL = getIntersection(hLines[0].data, vLines[0].data);
             const pTR = getIntersection(hLines[0].data, vLines[vLines.length-1].data);
             const pBR = getIntersection(hLines[hLines.length-1].data, vLines[vLines.length-1].data);
@@ -132,20 +135,20 @@
 
             if (pTL && pTR && pBR && pBL) {
                 [pTL, pTR, pBR, pBL].forEach((p, i) => {
-                    corners[i].x += (p.x * toVisual - corners[i].x) * 0.2;
-                    corners[i].y += (p.y * toVisual - corners[i].y) * 0.2;
+                    corners[i].x += (p.x * toVisualW - corners[i].x) * 0.2;
+                    corners[i].y += (p.y * toVisualH - corners[i].y) * 0.2;
                 });
                 drawUI(corners);
             }
         }
 
-        // Dibujar guías manuales de usuario
-        ctx.strokeStyle = 'rgba(0, 212, 255, 0.5)';
-        ctx.setLineDash([10, 10]);
-        const visualXLeft = (centerX - visualLimitX) * toVisual;
-        const visualXRight = (centerX + visualLimitX) * toVisual;
-        ctx.beginPath(); ctx.moveTo(visualXLeft, 0); ctx.lineTo(visualXLeft, canvas.height); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(visualXRight, 0); ctx.lineTo(visualXRight, canvas.height); ctx.stroke();
+        // Guías de usuario (Horizontales en Cyan)
+        ctx.strokeStyle = 'rgba(0, 212, 255, 0.6)';
+        ctx.setLineDash([5, 5]);
+        const visualYTop = (centerInProcY - searchLimitY) * toVisualH;
+        const visualYBot = (centerInProcY + searchLimitY) * toVisualH;
+        ctx.beginPath(); ctx.moveTo(0, visualYTop); ctx.lineTo(canvas.width, visualYTop); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, visualYBot); ctx.lineTo(canvas.width, visualYBot); ctx.stroke();
         ctx.setLineDash([]);
 
         src.delete(); dst.delete(); lines.delete();
@@ -153,7 +156,7 @@
     }
 
     function drawUI(pts) {
-        ctx.strokeStyle = '#00ff00'; ctx.lineWidth = 3;
+        ctx.strokeStyle = '#00ff00'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
         pts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath(); ctx.stroke();
