@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Analizador Pro</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; touch-action: none; }
+        #container { position: relative; width: 100vw; height: 100vh; background: #000; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+        
+        #ui-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+        .top-bar { padding: 20px; background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent); text-align: center; }
+        .bottom-bar { padding: 30px 20px; background: linear-gradient(to top, rgba(0,0,0,0.7), transparent); display: flex; flex-direction: column; align-items: center; gap: 15px; pointer-events: auto; }
+
+        #status { padding: 5px 15px; border-radius: 15px; font-size: 12px; display: inline-block; transition: all 0.3s; }
+        .waiting { background: #555; }
+        .searching { background: #f39c12; }
+        .detected { background: #27ae60; }
+
+        select, button { padding: 12px 20px; font-size: 16px; border-radius: 25px; border: none; font-weight: bold; }
+        button { background: #00d4ff; color: #000; width: 80%; max-width: 300px; box-shadow: 0 4px 15px rgba(0,212,255,0.4); }
+        button:active { transform: scale(0.98); }
+        
+        #loading-screen { position: absolute; inset: 0; background: #121212; z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body>
+
+<div id="loading-screen">
+    <div style="font-size: 24px; margin-bottom: 10px;">🤖 OpenCV</div>
+    <div id="load-msg">Cargando motor de visión...</div>
+</div>
+
+<div id="container">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+
+    <div id="ui-overlay">
+        <div class="top-bar">
+            <div id="status" class="waiting">Esperando cámara...</div>
+        </div>
+
+        <div class="bottom-bar">
+            <select id="gridType">
+                <option value="tercios">Regla de Tercios</option>
+                <option value="golden">Proporción Áurea</option>
+                <option value="simetria">Simetría Central</option>
+            </select>
+            <button id="startBtn">INICIAR ANALIZADOR</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: true });
+    const statusDiv = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    
+    // Canvas oculto para procesamiento ligero
+    const procCanvas = document.createElement('canvas');
+    const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
+    const PROC_WIDTH = 400; // Resolución de análisis (baja para velocidad)
+
+    let cvReady = false;
+    let isRunning = false;
+    let stream = null;
+
+    function onOpenCvReady() {
+        cvReady = true;
+        document.getElementById('loading-screen').style.display = 'none';
+    }
+
+    async function startApp() {
+        try {
+            // 1. Fullscreen y Orientación
+            if (document.documentElement.requestFullscreen) {
+                await document.documentElement.requestFullscreen();
+                if (screen.orientation && screen.orientation.lock) {
+                    await screen.orientation.lock('portrait').catch(e => console.log("Lock no soportado"));
+                }
+            }
+
+            // 2. Cámara
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false
+            });
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                isRunning = true;
+                startBtn.style.display = 'none';
+                processFrame();
+            };
+        } catch (err) {
+            alert("Error: " + err.message);
+        }
+    }
+
+    startBtn.addEventListener('click', startApp);
+
+    function processFrame() {
+        if (!isRunning) return;
+
+        // Dibujamos el frame actual en el canvas de procesamiento (pequeño)
+        procCanvas.width = PROC_WIDTH;
+        procCanvas.height = (video.videoHeight / video.videoWidth) * PROC_WIDTH;
+        procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+
+        let frame = cv.imread(procCanvas);
+        let gray = new cv.Mat();
+        let blurred = new cv.Mat();
+        let edges = new cv.Mat();
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+
+        // Pipeline de visión
+        cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+        cv.Canny(blurred, edges, 75, 200);
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        let bestApprox = null;
+        let maxArea = 0;
+
+        for (let i = 0; i < contours.size(); ++i) {
+            let cnt = contours.get(i);
+            let area = cv.contourArea(cnt);
+            if (area > (procCanvas.width * procCanvas.height * 0.1)) { // Mínimo 10% del área
+                let peri = cv.arcLength(cnt, true);
+                let approx = new cv.Mat();
+                cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+                
+                if (approx.rows === 4 && area > maxArea) {
+                    maxArea = area;
+                    if (bestApprox) bestApprox.delete();
+                    bestApprox = approx;
+                } else {
+                    approx.delete();
+                }
+            }
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (bestApprox) {
+            statusDiv.textContent = "✅ RECTÁNGULO DETECTADO";
+            statusDiv.className = "detected";
+
+            // Escalar puntos de vuelta a la resolución real del video
+            const scale = canvas.width / procCanvas.width;
+            let pts = [];
+            for (let i = 0; i < 4; i++) {
+                pts.push(bestApprox.data32S[i * 2] * scale);
+                pts.push(bestApprox.data32S[i * 2 + 1] * scale);
+            }
+
+            drawGrid(pts);
+        } else {
+            statusDiv.textContent = "🔍 BUSCANDO CUADRO...";
+            statusDiv.className = "searching";
+        }
+
+        // Limpieza de memoria OpenCV
+        frame.delete(); gray.delete(); blurred.delete(); edges.delete();
+        contours.delete(); hierarchy.delete();
+        if (bestApprox) bestApprox.delete();
+
+        requestAnimationFrame(processFrame);
+    }
+
+    function drawGrid(pts) {
+        // pts: [x1,y1, x2,y2, x3,y3, x4,y4]
+        // Dibujar borde
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(pts[0], pts[1]);
+        for(let i=1; i<4; i++) ctx.lineTo(pts[i*2], pts[i*2+1]);
+        ctx.closePath();
+        ctx.stroke();
+
+        const gridType = document.getElementById('gridType').value;
+        
+        // Función simple para interpolar puntos entre dos esquinas
+        const lerp = (p1, p2, t) => ({
+            x: p1.x + (p2.x - p1.x) * t,
+            y: p1.y + (p2.y - p1.y) * t
+        });
+
+        // Esquinas (ordenadas)
+        const p1 = {x: pts[0], y: pts[1]}, p2 = {x: pts[2], y: pts[3]}, 
+              p3 = {x: pts[4], y: pts[5]}, p4 = {x: pts[6], y: pts[7]};
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.lineWidth = 1.5;
+
+        let lines = [];
+        if (gridType === 'tercios') lines = [1/3, 2/3];
+        else if (gridType === 'golden') lines = [1/1.618, 1 - (1/1.618)];
+        else if (gridType === 'simetria') lines = [0.5];
+
+        lines.forEach(t => {
+            // Líneas verticales (aprox)
+            let top = lerp(p1, p2, t);
+            let bot = lerp(p4, p3, t);
+            ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bot.x, bot.y); ctx.stroke();
+            
+            // Líneas horizontales (aprox)
+            let left = lerp(p1, p4, t);
+            let right = lerp(p2, p3, t);
+            ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+        });
+    }
+</script>
+</body>
+</html>
