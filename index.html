@@ -3,41 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CV Interactivo - Detector de Cuadros</title>
+    <title>CV Fix - Coordenadas Reales</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
     <style>
         body { margin: 0; padding: 0; background: #000; color: white; font-family: system-ui; overflow: hidden; touch-action: none; }
         #container { position: relative; width: 100vw; height: 100vh; }
-        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.5; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; }
-        #ui-hint { 
-            position: absolute; top: 20px; width: 100%; text-align: center; 
-            z-index: 10; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
-        }
-        .controls { 
-            position: absolute; bottom: 30px; width: 100%; display: flex; 
-            justify-content: center; z-index: 10; gap: 10px;
-        }
-        button { 
-            padding: 12px 24px; border-radius: 30px; border: none; 
-            background: #00d4ff; font-weight: bold; font-size: 14px;
-        }
-        #debug-info {
-            position: absolute; top: 60px; left: 10px; font-family: monospace;
-            font-size: 10px; background: rgba(0,0,0,0.5); padding: 5px; pointer-events: none;
-        }
+        /* El video y el canvas deben ocupar el mismo espacio exacto */
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+        video { opacity: 0.5; }
+        canvas { z-index: 2; pointer-events: auto; }
+        #ui-hint { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 10; pointer-events: none; }
+        .controls { position: absolute; bottom: 30px; width: 100%; display: flex; justify-content: center; z-index: 10; gap: 10px; }
+        button { padding: 12px 24px; border-radius: 30px; border: none; background: #00d4ff; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<div id="ui-hint">Toca el centro del cuadro para enfocar</div>
-<div id="debug-info">Esperando OpenCV...</div>
-
+<div id="ui-hint">Toca el cuadro para filtrar ruido</div>
 <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
     <div class="controls">
-        <button id="startBtn">INICIAR CÁMARA</button>
+        <button id="startBtn">INICIAR</button>
         <button id="resetBtn" style="background:#555">RESET</button>
     </div>
 </div>
@@ -46,7 +33,6 @@
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const debugInfo = document.getElementById('debug-info');
     const startBtn = document.getElementById('startBtn');
     const resetBtn = document.getElementById('resetBtn');
 
@@ -56,32 +42,31 @@
 
     let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
     let isRunning = false;
-    let userFocus = null; // Coordenadas del toque del usuario
+    let userFocus = null; // Coordenadas NORMALIZADAS (0 a 1)
 
-    function onOpenCvReady() { debugInfo.textContent = "OpenCV Listo."; }
+    function onOpenCvReady() { console.log("OpenCV Ready"); }
 
-    // Interacción: El usuario ayuda al algoritmo
+    // CORRECCIÓN: Captura de coordenadas relativas al elemento
     canvas.addEventListener('pointerdown', (e) => {
         const rect = canvas.getBoundingClientRect();
+        // Guardamos la posición como porcentaje (0.0 a 1.0) para que sea independiente de la resolución
         userFocus = {
-            x: (e.clientX - rect.left) * (PROC_W / canvas.width),
-            y: (e.clientY - rect.top) * (PROC_W / canvas.width) // Proporcional al procCanvas
+            x: (e.clientX - rect.left) / rect.width,
+            y: (e.clientY - rect.top) / rect.height
         };
-        // Feedback visual rápido
-        ctx.fillStyle = "cyan";
-        ctx.beginPath(); ctx.arc(e.clientX, e.clientY, 20, 0, Math.PI*2); ctx.fill();
     });
 
-    resetBtn.onclick = () => { userFocus = null; corners.forEach(p => {p.x=0;p.y=0;}); };
+    resetBtn.onclick = () => { userFocus = null; };
 
     startBtn.onclick = async () => {
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment', width: 1280 } 
+            video: { facingMode: 'environment', width: { ideal: 1280 } } 
         });
         video.srcObject = stream;
         video.onloadedmetadata = () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            // Sincronizamos el tamaño interno del canvas con el tamaño visual
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
             isRunning = true;
             startBtn.style.display = 'none';
             processFrame();
@@ -102,24 +87,29 @@
     function processFrame() {
         if (!isRunning) return;
 
+        // 1. Dibujamos en el canvas de proceso respetando la resolución baja
         procCanvas.width = PROC_W;
-        procCanvas.height = (video.videoHeight / video.videoWidth) * PROC_W;
+        procCanvas.height = (canvas.height / canvas.width) * PROC_W;
         procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
 
         let src = cv.imread(procCanvas);
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
         cv.Canny(dst, dst, 60, 160);
 
         let lines = new cv.Mat();
-        cv.HoughLinesP(dst, lines, 1, Math.PI/180, 40, 70, 40);
+        cv.HoughLinesP(dst, lines, 1, Math.PI/180, 30, 60, 30);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const scale = canvas.width / PROC_W;
 
         let hLines = [];
         let vLines = [];
+
+        // Convertimos el foco del usuario a píxeles de procCanvas
+        let focusInProc = userFocus ? { 
+            x: userFocus.x * procCanvas.width, 
+            y: userFocus.y * procCanvas.height 
+        } : null;
 
         for (let i = 0; i < lines.rows; ++i) {
             let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
@@ -127,22 +117,24 @@
             let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
             let midX = (l[0]+l[2])/2, midY = (l[1]+l[3])/2;
 
-            // Dibujar TODAS las líneas (Debug)
-            ctx.strokeStyle = 'rgba(255, 50, 50, 0.2)';
-            ctx.beginPath(); ctx.moveTo(l[0]*scale, l[1]*scale); ctx.lineTo(l[2]*scale, l[3]*scale); ctx.stroke();
+            // Debug de líneas detectadas
+            ctx.strokeStyle = 'rgba(255, 50, 50, 0.15)';
+            ctx.beginPath();
+            ctx.moveTo(l[0] * (canvas.width/procCanvas.width), l[1] * (canvas.height/procCanvas.height));
+            ctx.lineTo(l[2] * (canvas.width/procCanvas.width), l[3] * (canvas.height/procCanvas.height));
+            ctx.stroke();
 
-            // Si hay toque de usuario, filtrar líneas lejos del toque
-            if (userFocus) {
-                let dist = Math.sqrt((midX - userFocus.x)**2 + (midY - userFocus.y)**2);
-                if (dist > 200) continue; // Ignorar líneas muy lejanas al interés
+            // FILTRO DE INTERÉS: Solo líneas cerca del toque
+            if (focusInProc) {
+                let dist = Math.sqrt((midX - focusInProc.x)**2 + (midY - focusInProc.y)**2);
+                if (dist > 150) continue; // Umbral de cercanía
             }
 
-            if (angle < 25 || angle > 155) hLines.push({data: l, mid: midY});
-            else if (angle > 65 && angle < 115) vLines.push({data: l, mid: midX});
+            if (angle < 20 || angle > 160) hLines.push({data: l, mid: midY});
+            else if (angle > 70 && angle < 110) vLines.push({data: l, mid: midX});
         }
 
         if (hLines.length >= 2 && vLines.length >= 2) {
-            // Buscamos pares de líneas con mejor separación
             hLines.sort((a,b) => a.mid - b.mid);
             vLines.sort((a,b) => a.mid - b.mid);
 
@@ -158,44 +150,38 @@
 
             if (pTL && pTR && pBR && pBL) {
                 const pts = [pTL, pTR, pBR, pBL];
-                
-                // Calcular Aspect Ratio para debug
-                let w = Math.sqrt((pTR.x-pTL.x)**2 + (pTR.y-pTL.y)**2);
-                let h = Math.sqrt((pBL.x-pTL.x)**2 + (pBL.y-pTL.y)**2);
-                let ratio = (w/h).toFixed(2);
-                debugInfo.textContent = `Ratio detectado: ${ratio} | Foco: ${userFocus ? 'Manual' : 'Auto'}`;
-
                 pts.forEach((p, i) => {
-                    corners[i].x += (p.x * scale - corners[i].x) * 0.15;
-                    corners[i].y += (p.y * scale - corners[i].y) * 0.15;
+                    // Mapeo final de procCanvas a canvas visual
+                    corners[i].x += (p.x * (canvas.width/procCanvas.width) - corners[i].x) * 0.2;
+                    corners[i].y += (p.y * (canvas.height/procCanvas.height) - corners[i].y) * 0.2;
                 });
-                drawTarget(corners);
+                drawUI(corners);
             }
         }
+
+        if (userFocus) drawFocusCircle();
 
         src.delete(); dst.delete(); lines.delete();
         requestAnimationFrame(processFrame);
     }
 
-    function drawTarget(pts) {
-        ctx.lineWidth = 4;
+    function drawFocusCircle() {
+        ctx.strokeStyle = "cyan";
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.arc(userFocus.x * canvas.width, userFocus.y * canvas.height, 60, 0, Math.PI*2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    function drawUI(pts) {
+        ctx.lineWidth = 3;
         ctx.strokeStyle = '#00ff00';
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
         pts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
         ctx.stroke();
-
-        // Dibujar centro de foco del usuario si existe
-        if (userFocus) {
-            ctx.strokeStyle = "cyan";
-            ctx.lineWidth = 1;
-            ctx.setLineDash([5, 5]);
-            ctx.beginPath();
-            ctx.arc(userFocus.x * (canvas.width/PROC_W), userFocus.y * (canvas.width/PROC_W), 50, 0, Math.PI*2);
-            ctx.stroke();
-            ctx.setLineDash([]);
-        }
     }
 </script>
 </body>
