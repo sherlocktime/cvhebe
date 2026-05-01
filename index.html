@@ -106,75 +106,97 @@
 
     startBtn.addEventListener('click', startApp);
 
-    function processFrame() {
-        if (!isRunning) return;
+function processFrame() {
+    if (!isRunning) return;
 
-        // Dibujamos el frame actual en el canvas de procesamiento (pequeño)
-        procCanvas.width = PROC_WIDTH;
-        procCanvas.height = (video.videoHeight / video.videoWidth) * PROC_WIDTH;
-        procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+    // 1. Ajuste de dimensiones de procesamiento
+    // Usamos el tamaño real del elemento video en pantalla para mapear bien los puntos
+    const videoRect = video.getBoundingClientRect();
+    procCanvas.width = PROC_WIDTH;
+    procCanvas.height = (video.videoHeight / video.videoWidth) * PROC_WIDTH;
+    procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
 
-        let frame = cv.imread(procCanvas);
-        let gray = new cv.Mat();
-        let blurred = new cv.Mat();
-        let edges = new cv.Mat();
-        let contours = new cv.MatVector();
-        let hierarchy = new cv.Mat();
+    let frame = cv.imread(procCanvas);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
 
-        // Pipeline de visión
-        cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-        cv.Canny(blurred, edges, 75, 200);
-        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    // 2. Pipeline de Visión Robusto
+    cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+    
+    // Ecualización de histograma para mejorar contraste en fotos lavadas
+    cv.equalizeHist(gray, gray);
 
-        let bestApprox = null;
-        let maxArea = 0;
+    // El umbral adaptativo detecta bordes incluso con poca diferencia de color
+    cv.adaptiveThreshold(gray, edges, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
 
-        for (let i = 0; i < contours.size(); ++i) {
-            let cnt = contours.get(i);
-            let area = cv.contourArea(cnt);
-            if (area > (procCanvas.width * procCanvas.height * 0.1)) { // Mínimo 10% del área
-                let peri = cv.arcLength(cnt, true);
-                let approx = new cv.Mat();
-                cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-                
-                if (approx.rows === 4 && area > maxArea) {
+    // Limpieza de ruido: Dilatamos para conectar líneas sueltas y erosionamos para limpiar
+    let kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+    cv.dilate(edges, edges, kernel, new cv.Point(-1, -1), 1);
+    cv.erode(edges, edges, kernel, new cv.Point(-1, -1), 1);
+
+    // 3. Búsqueda de Contornos
+    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    let bestApprox = null;
+    let maxArea = 0;
+
+    for (let i = 0; i < contours.size(); ++i) {
+        let cnt = contours.get(i);
+        let area = cv.contourArea(cnt);
+        
+        // El cuadro debe ocupar al menos un 5% pero no ser la pantalla completa
+        if (area > (procCanvas.width * procCanvas.height * 0.05)) {
+            let peri = cv.arcLength(cnt, true);
+            let approx = new cv.Mat();
+            cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+            // Validamos que sea un cuadrilátero convexo
+            if (approx.rows === 4 && cv.isContourConvex(approx)) {
+                if (area > maxArea) {
                     maxArea = area;
                     if (bestApprox) bestApprox.delete();
                     bestApprox = approx;
                 } else {
                     approx.delete();
                 }
+            } else {
+                approx.delete();
             }
         }
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        if (bestApprox) {
-            statusDiv.textContent = "✅ RECTÁNGULO DETECTADO";
-            statusDiv.className = "detected";
-
-            // Escalar puntos de vuelta a la resolución real del video
-            const scale = canvas.width / procCanvas.width;
-            let pts = [];
-            for (let i = 0; i < 4; i++) {
-                pts.push(bestApprox.data32S[i * 2] * scale);
-                pts.push(bestApprox.data32S[i * 2 + 1] * scale);
-            }
-
-            drawGrid(pts);
-        } else {
-            statusDiv.textContent = "🔍 BUSCANDO CUADRO...";
-            statusDiv.className = "searching";
-        }
-
-        // Limpieza de memoria OpenCV
-        frame.delete(); gray.delete(); blurred.delete(); edges.delete();
-        contours.delete(); hierarchy.delete();
-        if (bestApprox) bestApprox.delete();
-
-        requestAnimationFrame(processFrame);
     }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (bestApprox) {
+        statusDiv.textContent = "✅ COMPOSICIÓN DETECTADA";
+        statusDiv.className = "detected";
+
+        // 4. Mapeo de coordenadas (Solución al problema del 15%)
+        // Calculamos la escala basada en la relación entre el video real y el canvas de análisis
+        const scaleX = canvas.width / procCanvas.width;
+        const scaleY = canvas.height / procCanvas.height;
+        
+        let pts = [];
+        for (let i = 0; i < 4; i++) {
+            pts.push(bestApprox.data32S[i * 2] * scaleX);
+            pts.push(bestApprox.data32S[i * 2 + 1] * scaleY);
+        }
+
+        drawGrid(pts);
+    } else {
+        statusDiv.textContent = "🔍 BUSCANDO MARCO O LÍNEAS...";
+        statusDiv.className = "searching";
+    }
+
+    // 5. Limpieza de memoria (Vital para que no explote el navegador)
+    frame.delete(); gray.delete(); edges.delete();
+    contours.delete(); hierarchy.delete(); kernel.delete();
+    if (bestApprox) bestApprox.delete();
+
+    requestAnimationFrame(processFrame);
+}
 
     function drawGrid(pts) {
         // pts: [x1,y1, x2,y2, x3,y3, x4,y4]
