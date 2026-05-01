@@ -3,45 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CV Debug Mode</title>
+    <title>CV Interactivo - Detector de Cuadros</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        body { margin: 0; padding: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; padding: 0; background: #000; color: white; font-family: system-ui; overflow: hidden; touch-action: none; }
         #container { position: relative; width: 100vw; height: 100vh; }
-        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.6; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.5; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; }
-        #ui { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; z-index: 10; }
-        #status { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); padding: 5px 15px; border-radius: 10px; font-size: 12px; z-index: 10; background: rgba(0,0,0,0.5); }
-        button { padding: 15px 30px; border-radius: 30px; border: none; background: #00d4ff; font-weight: bold; }
+        #ui-hint { 
+            position: absolute; top: 20px; width: 100%; text-align: center; 
+            z-index: 10; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+        .controls { 
+            position: absolute; bottom: 30px; width: 100%; display: flex; 
+            justify-content: center; z-index: 10; gap: 10px;
+        }
+        button { 
+            padding: 12px 24px; border-radius: 30px; border: none; 
+            background: #00d4ff; font-weight: bold; font-size: 14px;
+        }
+        #debug-info {
+            position: absolute; top: 60px; left: 10px; font-family: monospace;
+            font-size: 10px; background: rgba(0,0,0,0.5); padding: 5px; pointer-events: none;
+        }
     </style>
 </head>
 <body>
 
-<div id="status">INICIALIZANDO...</div>
+<div id="ui-hint">Toca el centro del cuadro para enfocar</div>
+<div id="debug-info">Esperando OpenCV...</div>
+
 <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
-    <div id="ui"><button id="startBtn">INICIAR DEBUG</button></div>
+    <div class="controls">
+        <button id="startBtn">INICIAR CÁMARA</button>
+        <button id="resetBtn" style="background:#555">RESET</button>
+    </div>
 </div>
 
 <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const statusDiv = document.getElementById('status');
+    const debugInfo = document.getElementById('debug-info');
     const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
 
     const procCanvas = document.createElement('canvas');
     const procCtx = procCanvas.getContext('2d');
-    const PROC_W = 400;
+    const PROC_W = 450; 
 
     let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
     let isRunning = false;
+    let userFocus = null; // Coordenadas del toque del usuario
 
-    function onOpenCvReady() { statusDiv.textContent = "SISTEMA LISTO"; }
+    function onOpenCvReady() { debugInfo.textContent = "OpenCV Listo."; }
+
+    // Interacción: El usuario ayuda al algoritmo
+    canvas.addEventListener('pointerdown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        userFocus = {
+            x: (e.clientX - rect.left) * (PROC_W / canvas.width),
+            y: (e.clientY - rect.top) * (PROC_W / canvas.width) // Proporcional al procCanvas
+        };
+        // Feedback visual rápido
+        ctx.fillStyle = "cyan";
+        ctx.beginPath(); ctx.arc(e.clientX, e.clientY, 20, 0, Math.PI*2); ctx.fill();
+    });
+
+    resetBtn.onclick = () => { userFocus = null; corners.forEach(p => {p.x=0;p.y=0;}); };
 
     startBtn.onclick = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: 1280 } 
+        });
         video.srcObject = stream;
         video.onloadedmetadata = () => {
             canvas.width = video.videoWidth;
@@ -56,7 +92,7 @@
         const [x1, y1, x2, y2] = l1;
         const [x3, y3, x4, y4] = l2;
         const den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (Math.abs(den) < 0.01) return null;
+        if (Math.abs(den) < 0.1) return null;
         return {
             x: ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / den,
             y: ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / den
@@ -74,99 +110,92 @@
         let dst = new cv.Mat();
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
-        cv.Canny(dst, dst, 70, 180); // Umbral un poco más alto para limpiar
+        cv.Canny(dst, dst, 60, 160);
 
         let lines = new cv.Mat();
-        // Bajamos el umbral de votos (30) pero mantenemos longitud (60)
-        cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 30, 60, 30);
+        cv.HoughLinesP(dst, lines, 1, Math.PI/180, 40, 70, 40);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         const scale = canvas.width / PROC_W;
 
-        let hCandidates = [];
-        let vCandidates = [];
+        let hLines = [];
+        let vLines = [];
 
-        // --- MODO DEBUG: Dibujar todas las líneas detectadas ---
-        ctx.lineWidth = 1;
         for (let i = 0; i < lines.rows; ++i) {
             let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
-            let dx = l[2] - l[0];
-            let dy = l[3] - l[1];
-            let len = Math.sqrt(dx*dx + dy*dy);
+            let dx = l[2] - l[0], dy = l[3] - l[1];
             let angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+            let midX = (l[0]+l[2])/2, midY = (l[1]+l[3])/2;
 
-            // Dibujar línea de debug (rojo tenue)
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
-            ctx.beginPath();
-            ctx.moveTo(l[0]*scale, l[1]*scale);
-            ctx.lineTo(l[2]*scale, l[3]*scale);
-            ctx.stroke();
+            // Dibujar TODAS las líneas (Debug)
+            ctx.strokeStyle = 'rgba(255, 50, 50, 0.2)';
+            ctx.beginPath(); ctx.moveTo(l[0]*scale, l[1]*scale); ctx.lineTo(l[2]*scale, l[3]*scale); ctx.stroke();
 
-            // Clasificar por ángulo y guardar con su longitud
-            if (angle < 25 || angle > 155) hCandidates.push({data: l, len: len, mid: (l[1]+l[3])/2});
-            else if (angle > 65 && angle < 115) vCandidates.push({data: l, len: len, mid: (l[0]+l[2])/2});
+            // Si hay toque de usuario, filtrar líneas lejos del toque
+            if (userFocus) {
+                let dist = Math.sqrt((midX - userFocus.x)**2 + (midY - userFocus.y)**2);
+                if (dist > 200) continue; // Ignorar líneas muy lejanas al interés
+            }
+
+            if (angle < 25 || angle > 155) hLines.push({data: l, mid: midY});
+            else if (angle > 65 && angle < 115) vLines.push({data: l, mid: midX});
         }
 
-        // --- LÓGICA DE SELECCIÓN INTELIGENTE ---
-        // En lugar de las más externas, buscamos las líneas largas que definen un área central razonable
-        if (hCandidates.length >= 2 && vCandidates.length >= 2) {
-            // Ordenar por longitud descendente y tomar las mejores
-            hCandidates.sort((a, b) => b.len - a.len);
-            vCandidates.sort((a, b) => b.len - a.len);
+        if (hLines.length >= 2 && vLines.length >= 2) {
+            // Buscamos pares de líneas con mejor separación
+            hLines.sort((a,b) => a.mid - b.mid);
+            vLines.sort((a,b) => a.mid - b.mid);
 
-            // De las mejores líneas, intentamos encontrar un par que esté separado
-            let top = hCandidates[0];
-            let bot = hCandidates.find(h => Math.abs(h.mid - top.mid) > procCanvas.height * 0.2) || hCandidates[1];
-            
-            let left = vCandidates[0];
-            let right = vCandidates.find(v => Math.abs(v.mid - left.mid) > procCanvas.width * 0.2) || vCandidates[1];
+            let top = hLines[0].data;
+            let bot = hLines[hLines.length-1].data;
+            let left = vLines[0].data;
+            let right = vLines[vLines.length-1].data;
 
-            // Asegurar orden arriba/abajo izquierda/derecha
-            if (top.mid > bot.mid) [top, bot] = [bot, top];
-            if (left.mid > right.mid) [left, right] = [right, left];
-
-            // Intersecciones
-            const pTL = getIntersection(top.data, left.data);
-            const pTR = getIntersection(top.data, right.data);
-            const pBR = getIntersection(bot.data, right.data);
-            const pBL = getIntersection(bot.data, left.data);
+            const pTL = getIntersection(top, left);
+            const pTR = getIntersection(top, right);
+            const pBR = getIntersection(bot, right);
+            const pBL = getIntersection(bot, left);
 
             if (pTL && pTR && pBR && pBL) {
-                const target = [pTL, pTR, pBR, pBL];
-                target.forEach((p, i) => {
-                    corners[i].x += (p.x * scale - corners[i].x) * 0.2;
-                    corners[i].y += (p.y * scale - corners[i].y) * 0.2;
+                const pts = [pTL, pTR, pBR, pBL];
+                
+                // Calcular Aspect Ratio para debug
+                let w = Math.sqrt((pTR.x-pTL.x)**2 + (pTR.y-pTL.y)**2);
+                let h = Math.sqrt((pBL.x-pTL.x)**2 + (pBL.y-pTL.y)**2);
+                let ratio = (w/h).toFixed(2);
+                debugInfo.textContent = `Ratio detectado: ${ratio} | Foco: ${userFocus ? 'Manual' : 'Auto'}`;
+
+                pts.forEach((p, i) => {
+                    corners[i].x += (p.x * scale - corners[i].x) * 0.15;
+                    corners[i].y += (p.y * scale - corners[i].y) * 0.15;
                 });
-                drawUI(corners);
-                statusDiv.textContent = "ESTRUCTURA DETECTADA";
-                statusDiv.style.color = "#00ff00";
+                drawTarget(corners);
             }
-        } else {
-            statusDiv.textContent = "BUSCANDO LÍNEAS COHERENTES...";
-            statusDiv.style.color = "white";
         }
 
         src.delete(); dst.delete(); lines.delete();
         requestAnimationFrame(processFrame);
     }
 
-    function drawUI(pts) {
-        // Marco Verde
-        ctx.beginPath();
-        ctx.lineWidth = 3;
+    function drawTarget(pts) {
+        ctx.lineWidth = 4;
         ctx.strokeStyle = '#00ff00';
+        ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
         pts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
         ctx.stroke();
 
-        // Círculos en esquinas para debug visual
-        ctx.fillStyle = '#00ff00';
-        pts.forEach(p => {
+        // Dibujar centro de foco del usuario si existe
+        if (userFocus) {
+            ctx.strokeStyle = "cyan";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
-            ctx.fill();
-        });
+            ctx.arc(userFocus.x * (canvas.width/PROC_W), userFocus.y * (canvas.width/PROC_W), 50, 0, Math.PI*2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
     }
 </script>
 </body>
