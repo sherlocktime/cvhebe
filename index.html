@@ -3,26 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>CV - Ajuste Lado Largo (Vertical)</title>
+    <title>CV Fullscreen Pro</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
     <style>
-        body { margin: 0; padding: 0; background: #000; color: white; font-family: system-ui; overflow: hidden; touch-action: none; }
-        #container { position: relative; width: 100vw; height: 100vh; }
-        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+        body { margin: 0; padding: 0; background: #000; overflow: hidden; touch-action: none; font-family: sans-serif; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+        
+        /* Ajuste para que no haya deformación visual */
+        video, canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; }
         video { opacity: 0.4; }
-        canvas { z-index: 2; pointer-events: auto; }
-        #ui-hint { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 10; font-size: 14px; pointer-events: none; text-shadow: 0 2px 4px #000; }
-        .controls { position: absolute; bottom: 30px; width: 100%; display: flex; justify-content: center; z-index: 10; }
-        button { padding: 12px 24px; border-radius: 30px; border: none; background: #00d4ff; font-weight: bold; }
+        canvas { z-index: 2; }
+
+        #ui-hint { position: absolute; top: 40px; width: 100%; text-align: center; z-index: 10; color: #00d4ff; font-weight: bold; pointer-events: none; text-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+        .controls { position: absolute; bottom: 50px; z-index: 10; width: 100%; display: flex; justify-content: center; }
+        button { padding: 15px 30px; border-radius: 50px; border: none; background: #00d4ff; font-weight: bold; box-shadow: 0 4px 15px rgba(0,212,255,0.4); }
     </style>
 </head>
 <body>
 
-<div id="ui-hint">Desliza ARRIBA/ABAJO para ajustar el alto del cuadro</div>
+<div id="ui-hint">Desliza ARRIBA/ABAJO para ajustar marco</div>
+
 <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
-    <div class="controls"><button id="startBtn">INICIAR ANALIZADOR</button></div>
+    <div class="controls">
+        <button id="startBtn">INICIAR ANALIZADOR</button>
+    </div>
 </div>
 
 <script>
@@ -31,32 +37,49 @@
     const ctx = canvas.getContext('2d');
     const startBtn = document.getElementById('startBtn');
 
-    const PROC_W = 400;
+    const PROC_W = 400; 
     const procCanvas = document.createElement('canvas');
     const procCtx = procCanvas.getContext('2d');
 
-    let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
     let isRunning = false;
-    
-    // manualLimitY define la separación de las líneas horizontales (lado largo)
-    let manualLimitY = 0.85; 
+    let manualLimitY = 0.8; 
+    let corners = [{x:0,y:0},{x:0,y:0},{x:0,y:0},{x:0,y:0}];
 
+    // --- 1. FULLSCREEN ---
+    async function enableFullScreen() {
+        const doc = document.documentElement;
+        if (doc.requestFullscreen) await doc.requestFullscreen();
+        else if (doc.webkitRequestFullscreen) await doc.webkitRequestFullscreen();
+        else if (doc.msRequestFullscreen) await doc.msRequestFullscreen();
+        
+        // Bloquear orientación si es posible
+        if (screen.orientation && screen.orientation.lock) {
+            await screen.orientation.lock('portrait').catch(e => console.log("Orientation lock no soportado"));
+        }
+    }
+
+    // --- 2. INTERACCIÓN ---
     canvas.addEventListener('pointermove', (e) => {
         if (e.buttons > 0) {
             const rect = canvas.getBoundingClientRect();
-            // Calculamos la distancia desde el centro horizontal hacia arriba/abajo
-            manualLimitY = Math.min(0.98, Math.abs((e.clientY - rect.top) / rect.height - 0.5) * 2);
+            manualLimitY = Math.min(0.95, Math.abs((e.clientY - rect.top) / rect.height - 0.5) * 2);
         }
     });
 
-    function onOpenCvReady() { console.log("OpenCV Listo"); }
+    function onOpenCvReady() { console.log("OpenCV Ready"); }
 
     startBtn.onclick = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        await enableFullScreen();
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+        });
         video.srcObject = stream;
+
         video.onloadedmetadata = () => {
-            canvas.width = canvas.clientWidth;
-            canvas.height = canvas.clientHeight;
+            // Sincronizar canvas visual con el viewport real
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
             isRunning = true;
             startBtn.style.display = 'none';
             processFrame();
@@ -76,8 +99,11 @@
     function processFrame() {
         if (!isRunning) return;
 
+        // --- CORRECCIÓN DE PROPORCIÓN ---
+        // Usamos la relación de aspecto real del video, no de la pantalla
+        const videoAspect = video.videoWidth / video.videoHeight;
         procCanvas.width = PROC_W;
-        procCanvas.height = (canvas.height / canvas.width) * PROC_W;
+        procCanvas.height = PROC_W / videoAspect; 
         procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
 
         let src = cv.imread(procCanvas);
@@ -86,40 +112,46 @@
         cv.Canny(dst, dst, 60, 150);
 
         let lines = new cv.Mat();
-        cv.HoughLinesP(dst, lines, 1, Math.PI/180, 30, 50, 40);
+        cv.HoughLinesP(dst, lines, 1, Math.PI/180, 30, 60, 40);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const toVisualW = canvas.width / procCanvas.width;
-        const toVisualH = canvas.height / procCanvas.height;
 
-        let hLines = []; // Lados LARGOS (Horizontales)
-        let vLines = []; // Lados CORTOS (Verticales)
+        // Factores de escala para dibujar en el canvas visual (ajustado a object-fit: cover)
+        // Esto compensa el estiramiento del cover
+        const scaleX = canvas.width / procCanvas.width;
+        const scaleY = canvas.height / procCanvas.height;
+        const finalScale = Math.max(scaleX, scaleY); 
+        
+        const offsetX = (canvas.width - procCanvas.width * finalScale) / 2;
+        const offsetY = (canvas.height - procCanvas.height * finalScale) / 2;
 
-        const centerInProcY = procCanvas.height / 2;
-        const searchLimitY = (manualLimitY * procCanvas.height) / 2;
+        const toScreen = (px, py) => ({
+            x: px * finalScale + offsetX,
+            y: py * finalScale + offsetY
+        });
+
+        let hLines = [], vLines = [];
+        const centerY = procCanvas.height / 2;
+        const searchY = (manualLimitY * procCanvas.height) / 2;
 
         for (let i = 0; i < lines.rows; ++i) {
             let l = [lines.data32S[i*4], lines.data32S[i*4+1], lines.data32S[i*4+2], lines.data32S[i*4+3]];
             let angle = Math.abs(Math.atan2(l[3]-l[1], l[2]-l[0]) * 180 / Math.PI);
-            let midX = (l[0]+l[2])/2;
-            let midY = (l[1]+l[3])/2;
+            let midX = (l[0]+l[2])/2, midY = (l[1]+l[3])/2;
 
-            // Debug líneas rojas
-            ctx.strokeStyle = 'rgba(255,0,0,0.15)';
-            ctx.beginPath(); ctx.moveTo(l[0]*toVisualW, l[1]*toVisualH); ctx.lineTo(l[2]*toVisualW, l[3]*toVisualH); ctx.stroke();
+            // Debug líneas (ahora con escala corregida)
+            let p1 = toScreen(l[0], l[1]);
+            let p2 = toScreen(l[2], l[3]);
+            ctx.strokeStyle = 'rgba(255,0,0,0.2)';
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
 
-            // 1. Lados Cortos (Verticales): Fijos a los costados (85-90% del ancho)
-            if (angle > 75 && angle < 105) {
-                if (midX < procCanvas.width * 0.15 || midX > procCanvas.width * 0.85) {
-                    vLines.push({data: l, mid: midX});
-                }
+            // Lados CORTOS (Verticales - 90%)
+            if (angle > 70 && angle < 110) {
+                if (midX < procCanvas.width * 0.15 || midX > procCanvas.width * 0.85) vLines.push({data: l, mid: midX});
             } 
-            // 2. Lados Largos (Horizontales): Cerca de las guías de usuario (Y)
-            else if (angle < 15 || angle > 165) {
-                let distFromGuide = Math.abs(Math.abs(midY - centerInProcY) - searchLimitY);
-                if (distFromGuide < 40) { // Margen de búsqueda
-                    hLines.push({data: l, mid: midY});
-                }
+            // Lados LARGOS (Horizontales - Usuario)
+            else if (angle < 20 || angle > 160) {
+                if (Math.abs(Math.abs(midY - centerY) - searchY) < 40) hLines.push({data: l, mid: midY});
             }
         }
 
@@ -127,28 +159,28 @@
             hLines.sort((a,b) => a.mid - b.mid);
             vLines.sort((a,b) => a.mid - b.mid);
 
-            // Intersecciones para las 4 esquinas
-            const pTL = getIntersection(hLines[0].data, vLines[0].data);
-            const pTR = getIntersection(hLines[0].data, vLines[vLines.length-1].data);
-            const pBR = getIntersection(hLines[hLines.length-1].data, vLines[vLines.length-1].data);
-            const pBL = getIntersection(hLines[hLines.length-1].data, vLines[0].data);
+            const p1 = getIntersection(hLines[0].data, vLines[0].data);
+            const p2 = getIntersection(hLines[0].data, vLines[vLines.length-1].data);
+            const p3 = getIntersection(hLines[hLines.length-1].data, vLines[vLines.length-1].data);
+            const p4 = getIntersection(hLines[hLines.length-1].data, vLines[0].data);
 
-            if (pTL && pTR && pBR && pBL) {
-                [pTL, pTR, pBR, pBL].forEach((p, i) => {
-                    corners[i].x += (p.x * toVisualW - corners[i].x) * 0.2;
-                    corners[i].y += (p.y * toVisualH - corners[i].y) * 0.2;
+            if (p1 && p2 && p3 && p4) {
+                [p1, p2, p3, p4].forEach((p, i) => {
+                    let s = toScreen(p.x, p.y);
+                    corners[i].x += (s.x - corners[i].x) * 0.2;
+                    corners[i].y += (s.y - corners[i].y) * 0.2;
                 });
                 drawUI(corners);
             }
         }
 
-        // Guías de usuario (Horizontales en Cyan)
-        ctx.strokeStyle = 'rgba(0, 212, 255, 0.6)';
+        // Guías de usuario corregidas
+        ctx.strokeStyle = 'rgba(0, 212, 255, 0.5)';
+        let g1 = toScreen(0, centerY - searchY);
+        let g2 = toScreen(0, centerY + searchY);
         ctx.setLineDash([5, 5]);
-        const visualYTop = (centerInProcY - searchLimitY) * toVisualH;
-        const visualYBot = (centerInProcY + searchLimitY) * toVisualH;
-        ctx.beginPath(); ctx.moveTo(0, visualYTop); ctx.lineTo(canvas.width, visualYTop); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0, visualYBot); ctx.lineTo(canvas.width, visualYBot); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, g1.y); ctx.lineTo(canvas.width, g1.y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, g2.y); ctx.lineTo(canvas.width, g2.y); ctx.stroke();
         ctx.setLineDash([]);
 
         src.delete(); dst.delete(); lines.delete();
