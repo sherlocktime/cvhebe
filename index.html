@@ -104,19 +104,15 @@
     let initialImgX = 0, initialImgY = 0, initialScale = 1, initialDist = 0, initialCenter = { x: 0, y: 0 };
     let startTouches = [];
 
-    // Función para Fullscreen
     function toggleFullScreen() {
         if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(err => {
-                console.log(`Error al intentar fullscreen: ${err.message}`);
-            });
+            document.documentElement.requestFullscreen().catch(() => {});
         }
     }
 
     async function loadMuseumArt() {
         const btnMain = document.getElementById('mainActionBtn');
         const btnNext = document.getElementById('btn-next');
-        
         btnMain.innerText = "BUSCANDO...";
         btnNext.classList.add('loading');
         btnNext.innerText = "CARGANDO...";
@@ -128,7 +124,6 @@
             const artworks = data.data.filter(a => a.image_id);
             const art = artworks[Math.floor(Math.random() * artworks.length)];
             
-            // Bajamos a 600px de ancho para mayor velocidad
             const imgUrl = `https://www.artic.edu/iiif/2/${art.image_id}/full/600,/0/default.jpg`;
             
             const tempImg = new Image();
@@ -141,7 +136,6 @@
                     tCtx.translate(tCanvas.width/2, tCanvas.height/2);
                     tCtx.rotate(Math.PI/2);
                     tCtx.drawImage(tempImg, -tempImg.width/2, -tempImg.height/2);
-                    
                     const rotated = new Image();
                     rotated.onload = () => { loadedImage = rotated; setupView(); };
                     rotated.src = tCanvas.toDataURL();
@@ -164,12 +158,9 @@
         document.getElementById('mainActionBtn').style.display = "none";
         document.getElementById('top-ui').style.display = "flex";
         document.getElementById('controls-area').style.display = "flex";
-        
-        const btnNext = document.getElementById('btn-next');
-        btnNext.classList.remove('loading');
-        btnNext.innerText = "SIGUIENTE PINTURA";
-
-        if (screen.orientation && screen.orientation.lock) screen.orientation.lock('portrait').catch(e=>{});
+        document.getElementById('btn-next').classList.remove('loading');
+        document.getElementById('btn-next').innerText = "SIGUIENTE PINTURA";
+        if (screen.orientation && screen.orientation.lock) screen.orientation.lock('portrait').catch(()=>{});
         render();
     }
 
@@ -181,7 +172,6 @@
         else { imgScale = H/loadedImage.height; imgY = 0; imgX = (W - (loadedImage.width*imgScale))/2; }
     }
 
-    // --- GESTOS Y RENDER ---
     function handleStart(e) {
         if (!isRunning || !loadedImage) return;
         isDragging = true;
@@ -251,6 +241,7 @@
     }
 
     function dibujarGrilla(mode, x, y, w, h) {
+        ctx.setLineDash([]);
         if (mode === 'tercios') {
             for(let i=1; i<3; i++) { line(x+w*i/3, y, x+w*i/3, y+h); line(x, y+h*i/3, x+w, y+h*i/3); }
         } else if (mode === 'golden') {
@@ -273,8 +264,14 @@
             }
         } else if (mode === 'fuga') {
             const fx=x+w*fugaX, fy=y+h*fugaY;
+            // Guías punteadas (Horizonte y Vertical)
+            ctx.setLineDash([5, 5]);
+            line(x, fy, x+w, fy); 
+            line(fx, y, fx, y+h);
+            ctx.setLineDash([]);
+            // Líneas de fuga
             line(x,y,fx,fy); line(x+w,y,fx,fy); line(x,y+h,fx,fy); line(x+w,y+h,fx,fy);
-            ctx.beginPath(); ctx.arc(fx,fy,5,0,7); ctx.fill();
+            ctx.beginPath(); ctx.arc(fx,fy,5,0,7); ctx.fillStyle = colors[cIdx]; ctx.fill();
         } else if (mode === 'puntos-fuerza') {
             for(let i=1; i<3; i++) for(let j=1; j<3; j++) { ctx.beginPath(); ctx.arc(x+w*i/3, y+h*j/3, 8, 0, 7); ctx.stroke(); }
         } else if (mode === 'cuadrado') {
@@ -288,13 +285,15 @@
 
     function line(x1,y1,x2,y2) { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
 
-    document.getElementById('mainActionBtn').addEventListener('click', () => {
-        toggleFullScreen();
-        loadMuseumArt();
+    document.getElementById('mainActionBtn').addEventListener('click', () => { toggleFullScreen(); loadMuseumArt(); });
+    document.getElementById('btn-next').addEventListener('click', loadMuseumArt);
+    
+    document.getElementById('btn-grid').addEventListener('click', (e) => { 
+        gIdx = (gIdx+1)%grids.length; 
+        transformIdx = 0; // RESET TRANSFORM AL CAMBIAR GRilla
+        e.target.textContent = gridLabels[gIdx]; 
     });
 
-    document.getElementById('btn-next').addEventListener('click', loadMuseumArt);
-    document.getElementById('btn-grid').addEventListener('click', (e) => { gIdx = (gIdx+1)%grids.length; e.target.textContent = gridLabels[gIdx]; });
     document.getElementById('btn-transform').addEventListener('click', () => transformIdx = (transformIdx+1)%4);
     document.getElementById('btn-color').addEventListener('click', () => { cIdx=(cIdx+1)%colors.length; document.getElementById('color-dot').style.background=colors[cIdx]; });
     
@@ -302,10 +301,8 @@
         toggleFullScreen();
         centerImage(); 
         transformIdx=0; 
-        fugaX = 0.5;
-        fugaY = 0.5;
+        fugaX = 0.5; fugaY = 0.5;
     });
-
 </script>
 </body>
 </html>
