@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Cámara y Voz</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        h2 { margin-top: 0; color: #00ff88; }
+        .container {
+            width: 100%;
+            max-width: 500px;
+            text-align: center;
+        }
+        video {
+            width: 100%;
+            border-radius: 12px;
+            background: #222;
+            transform: scaleX(1); /* Cambiar a -1 si querés efecto espejo (selfie) */
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: center;
+        }
+        button {
+            padding: 12px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-manual { background: #007bff; color: white; }
+        .btn-voz { background: #28a745; color: white; }
+        .btn-voz.activo { background: #dc3545; animation: pulse 1.5s infinite; }
+        
+        #status {
+            margin-top: 15px;
+            font-style: italic;
+            color: #aaa;
+            min-height: 24px;
+        }
+        #galeria {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center;
+        }
+        img {
+            width: 100%;
+            border-radius: 8px;
+            border: 2px solid #00ff88;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Cámara por Comando de Voz</h2>
+    
+    <!-- Previsualización en calidad de video estándar -->
+    <video id="preview" autoplay playsinline muted></video>
+    
+    <div class="buttons">
+        <button class="btn-manual" onclick="capturarFoto()">📸 Foto Manual</button>
+        <button id="btnVoz" class="btn-voz" onclick="conmutarVoz()">🎤 Activar Voz</button>
+    </div>
+
+    <div id="status">Presioná "Activar Voz" y decí "Capturar" o "Foto"</div>
+    
+    <div id="galeria">
+        <p>Última captura (Máxima resolución):</p>
+        <!-- Acá se mostrará la foto final -->
+        <img id="resultado" style="display:none;" alt="Captura">
+    </div>
+</div>
+
+<script>
+    let streamActual = null;
+    let imageCapture = null;
+    let reconocimiento = null;
+    let modoVozActivo = false;
+
+    const videoElement = document.getElementById('preview');
+    const statusElement = document.getElementById('status');
+    const btnVoz = document.getElementById('btnVoz');
+    const imgResultado = document.getElementById('resultado');
+
+    // 1. Iniciar la cámara al cargar la página
+    async function iniciarCamara() {
+        try {
+            // Pedimos el stream de video normal para la preview
+            streamActual = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment" } // Usa la cámara trasera por defecto
+            });
+            videoElement.srcObject = streamActual;
+            
+            // Creamos el capturador de fotos acoplado a la pista de video
+            const videoTrack = streamActual.getVideoTracks()[0];
+            
+            // Verificamos si ImageCapture está disponible (Chrome/Android)
+            if ('ImageCapture' in window) {
+                imageCapture = new ImageCapture(videoTrack);
+            } else {
+                statusElement.innerText = "ImageCapture no soportado. Se usará fallback de menor calidad.";
+            }
+        } catch (err) {
+            console.error("Error al acceder a la cámara: ", err);
+            statusElement.innerText = "Error al abrir la cámara. ¿Diste permisos?";
+        }
+    }
+
+    // 2. Función para disparar la foto a máxima resolución
+    async function capturarFoto() {
+        if (!streamActual) return;
+        
+        statusElement.innerText = "¡Capturando...!";
+        
+        try {
+            if (imageCapture) {
+                // API Moderna: Saca la foto con los megapíxeles reales del sensor
+                const blob = await imageCapture.takePhoto();
+                const url = URL.createObjectURL(blob);
+                imgResultado.src = url;
+                imgResultado.style.display = "block";
+                statusElement.innerText = "¡Foto capturada a resolución completa!";
+            } else {
+                // Fallback clásico usando un Canvas (captura solo la resolución del video de preview)
+                const canvas = document.createElement('canvas');
+                canvas.width = videoElement.videoWidth;
+                canvas.height = videoElement.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                imgResultado.src = canvas.toDataURL('image/jpeg');
+                imgResultado.style.display = "block";
+                statusElement.innerText = "Foto capturada (Calidad de video).";
+            }
+        } catch (err) {
+            console.error(err);
+            statusElement.innerText = "Error al tomar la foto.";
+        }
+    }
+
+    // 3. Configurar el motor de Reconocimiento de Voz
+    function configurarVoz() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            statusElement.innerText = "Tu navegador no soporta reconocimiento de voz.";
+            btnVoz.style.display = "none";
+            return;
+        }
+
+        reconocimiento = new SpeechRecognition();
+        reconocimiento.lang = 'es-AR'; // Ajustalo a tu variante local si querés
+        reconocimiento.continuous = true; // No se frena al primer silencio
+        reconocimiento.interimResults = true; // Escucha en tiempo real
+
+        reconocimiento.onresult = (event) => {
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                // Pasamos lo que escuchó a minúsculas y limpiamos espacios
+                let texto = event.results[i][0].transcript.toLowerCase().trim();
+                statusElement.innerText = `Escuché: "${texto}"`;
+
+                // Si encuentra las palabras clave, dispara
+                if (texto.includes('capturar') || texto.includes('foto') || texto.includes('disparar')) {
+                    capturarFoto();
+                }
+            }
+        };
+
+        reconocimiento.onerror = (event) => {
+            console.error(event.error);
+            if (event.error === 'not-allowed') {
+                statusElement.innerText = "Bloqueado: Requiere permisos de micrófono.";
+                desactivarVozUI();
+            }
+        };
+
+        reconocimiento.onend = () => {
+            // Si se apaga solo pero el modo seguía activo, lo reiniciamos
+            if (modoVozActivo) reconocimiento.start();
+        };
+    }
+
+    // 4. Encender / Apagar el micrófono con el botón
+    function conmutarVoz() {
+        if (!reconocimiento) configurarVoz();
+        
+        if (!modoVozActivo) {
+            modoVozActivo = true;
+            reconocimiento.start();
+            btnVoz.innerText = "🛑 Detener Voz";
+            btnVoz.classList.add('activo');
+            statusElement.innerText = "Escuchando... Decí 'Capturar'";
+        } else {
+            desactivarVozUI();
+        }
+    }
+
+    function desactivarVozUI() {
+        modoVozActivo = false;
+        if (reconocimiento) reconocimiento.stop();
+        btnVoz.innerText = "🎤 Activar Voz";
+        btnVoz.classList.remove('activo');
+        statusElement.innerText = "Modo voz desactivado.";
+    }
+
+    // Arrancar la cámara automáticamente al entrar
+    window.addEventListener('load', iniciarCamara);
+</script>
+
+</body>
+</html>
